@@ -248,28 +248,35 @@ class BeamSolver:
                     seen.add(sig)
                     pool.append(sig)
 
+            # 注入中间层的多要素覆盖签名（介于策略1和策略2之间）
+            # 确保深层的跨目标签名仍在扩展循环可达范围内
+            if other_aspects:
+                for val, num_a, _, sig in candidates:
+                    if sig not in seen and len(pool) < self.top_k_items * 2:
+                        vec = self.db.sig_vectors[sig]
+                        if any(vec[ASPECT_INDEX[o]] > 0 for o in other_aspects):
+                            seen.add(sig)
+                            pool.append(sig)
+
+            # 策略2：每个数值至少保留一条（纯度优先）
+            val_best = {}
+            for val, num_a, _, sig in candidates:
+                if val not in val_best or num_a < val_best[val][0]:
+                    val_best[val] = (num_a, sig)
+            for val in sorted(val_best.keys())[:50]:
+                _, sig = val_best[val]
+                if sig not in seen:
+                    seen.add(sig)
+                    pool.append(sig)
+
             # 策略3：多要素覆盖（仅目标要素 >1 时）
             if other_aspects:
                 for val, num_a, _, sig in candidates:
-                    if sig in seen:
-                        continue
-                    vec = self.db.sig_vectors[sig]
-                    for other in other_aspects:
-                        if vec[ASPECT_INDEX[other]] > 0:
+                    if sig not in seen:
+                        vec = self.db.sig_vectors[sig]
+                        if any(vec[ASPECT_INDEX[o]] > 0 for o in other_aspects):
                             seen.add(sig)
                             pool.append(sig)
-                            break
-
-            # 最终重排：多要素覆盖优先（使扩展循环尽早尝试这些签名）
-            # 这对于束搜索在小 top_k_items 下仍能覆盖跨目标签名至关重要
-            if other_aspects:
-                reordered = []
-                for idx, sig in enumerate(pool):
-                    vec = self.db.sig_vectors[sig]
-                    cov = sum(1 for o in other_aspects if vec[ASPECT_INDEX[o]] > 0)
-                    reordered.append((-cov, idx, sig))
-                reordered.sort()
-                pool = [sig for _, _, sig in reordered]
 
             aspect_sig_pool[aspect] = pool
 
