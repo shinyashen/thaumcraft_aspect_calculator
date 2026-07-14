@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Thaumcraft Aspect Calculator — 数据文件（用户自行获取）
+# 此文件由 Thaumcraft JEI 导出，包含所有物品的各要素分解值
+thaumicjei_itemstack_aspects.json
