@@ -22,6 +22,20 @@ from .solution import Solution
 
 def interactive_input(db: AspectDatabase) -> Dict[str, int]:
     """交互式输入要素需求"""
+    # ── Tab 自动补全 ──
+    try:
+        import readline
+
+        def _completer(text: str, state: int) -> Optional[str]:
+            options = [a for a in ALL_ASPECTS_ORDERED if a.startswith(text.lower())]
+            return options[state] if state < len(options) else None
+
+        readline.set_completer(_completer)
+        readline.set_completer_delims(' \t\n')
+        readline.parse_and_bind("tab: complete")
+    except ImportError:
+        pass  # readline 不可用（如 Windows 无 pyreadline），跳过自动补全
+
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║         Thaumcraft 6 要素配平器                      ║
