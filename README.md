@@ -1,0 +1,2 @@
+# thaumcraft_aspect_calculator
+神秘时代6要素求解器，用于辅助DJ2整合包游玩
