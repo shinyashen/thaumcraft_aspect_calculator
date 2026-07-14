@@ -211,6 +211,16 @@ class BeamSolver:
                 new_sol = self._sig_counts_to_solution(refined, target)
                 all_solutions[i] = new_sol
 
+        # 去重：精炼可能导致不同 sig_counts 收敛到相同物品组合
+        seen: Set[Tuple] = set()
+        deduped: List[Solution] = []
+        for sol in all_solutions:
+            key = tuple(sorted(sol.counts.items()))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(sol)
+        all_solutions = deduped
+
         # 最终排序
         all_solutions.sort(key=lambda s: (
             s.overflow,

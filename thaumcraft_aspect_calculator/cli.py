@@ -39,7 +39,7 @@ def interactive_input(db: AspectDatabase) -> Dict[str, int]:
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║         Thaumcraft 6 要素配平器                      ║
-║                                                     ║
+║                                                      ║
 ║ 输入需要的要素及数量，一行一个，格式: 要素名 数值    ║
 ║ 空行结束输入。                                       ║
 ║ 如: metallum 30                                      ║
@@ -156,7 +156,7 @@ def print_missing_json_error():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def print_results(solutions: List[Solution], db: AspectDatabase,
-                  items_per_group: int):
+                  items_per_group: int, target: Dict[str, int] = None):
     """输出求解结果"""
     if not solutions:
         print("❌ 未找到可行方案。")
@@ -177,13 +177,14 @@ def print_results(solutions: List[Solution], db: AspectDatabase,
     print()
     for i, sol in enumerate(solutions):
         print(sol.display(db, index=i + 1,
-                          max_items_per_group=items_per_group))
+                          max_items_per_group=items_per_group,
+                          target=target))
 
     if len(solutions) >= 2:
         print("📊 方案比较:")
         print(f"   {'方案':<8} {'溢出':<8} {'要素总量':<8} {'物品数':<8}")
         print(f"   {'-' * 32}")
-        for i, sol in enumerate(solutions[:min(5, len(solutions))]):
+        for i, sol in enumerate(solutions):
             print(f"   #{i + 1:<6} {sol.overflow:<8} {sol.totals_total:<8} {sol.item_count:<8}")
 
 
@@ -273,7 +274,8 @@ def main():
         solutions = solver.solve(target, n_solutions=args.num_solutions)
 
     # ── 输出 ──
-    print_results(solutions, db, items_per_group=args.items_per_group)
+    print_results(solutions, db, items_per_group=args.items_per_group,
+                  target=target)
 
 
 if __name__ == '__main__':

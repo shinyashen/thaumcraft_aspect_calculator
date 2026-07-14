@@ -60,7 +60,8 @@ class Solution:
     # ── 格式化输出 ───────────────────────────────────────────────────────
 
     def display(self, db: AspectDatabase, index: int = 1,
-                max_items_per_group: int = 5) -> str:
+                max_items_per_group: int = 5,
+                target: Dict[str, int] = None) -> str:
         """格式化为要素签名分组的输出"""
         lines = []
         sep = "─" * 40
@@ -70,7 +71,20 @@ class Solution:
 
         groups = self._group_counts_by_signature(db)
         for sig, cnt, items_in_group in groups:
-            lines.append(f"  {sig}  × {cnt}")
+            # 将签名中的要素拆分为目标要素与无关要素（附带浪费）
+            aspect_parts = sig.split(",")
+            target_parts = []
+            waste_parts = []
+            for ap in aspect_parts:
+                name = ap.split("=")[0]
+                if target and name in target:
+                    target_parts.append(f"★ {ap}")
+                else:
+                    waste_parts.append(f"· {ap}")
+            # 目标要素在前，无关要素在后
+            display_parts = target_parts + waste_parts
+            aspect_str = "  ".join(display_parts)
+            lines.append(f"  {aspect_str}  × {cnt}")
             # 获取数据库中所有同签名的物品
             all_sig_items = db.get_items_for_signature(sig)
             total_available = len(all_sig_items)
