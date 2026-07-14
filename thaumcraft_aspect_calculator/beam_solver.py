@@ -5,6 +5,7 @@ Thaumcraft 6 要素配平器 — 束搜索求解器
 实现签名级束搜索算法(BeamSolver)。
 """
 
+import math
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 
@@ -72,7 +73,8 @@ class BeamSolver:
         for item in relevant:
             relevant_sigs.add(AspectDatabase.aspect_signature(item.aspects))
 
-        aspect_sig_pool = self._build_sig_pool(target_aspects, relevant_sigs)
+        aspect_sig_pool, pure_less_set = self._build_sig_pool(
+            target_aspects, relevant_sigs)
 
         # ── 束搜索 ───────────────────────────────────────────────────────
         # State: (overflow, total_vector, sig_counts: Dict[signature, int])
@@ -86,6 +88,7 @@ class BeamSolver:
         expanded: Set[Tuple] = set()
         sol_sigs: Set[Tuple] = set()
         all_solutions: List[Solution] = []
+        all_sig_counts: List[Dict[str, int]] = []  # parallel to all_solutions
         prev_solution_count = 0
         no_new_solution_count = 0
         best_granularity = 0
@@ -105,6 +108,7 @@ class BeamSolver:
                         sol_sigs.add(key)
                         all_solutions.append(
                             self._sig_counts_to_solution(sig_counts, target))
+                        all_sig_counts.append(dict(sig_counts))
                     continue
 
                 expand_count += 1
@@ -135,14 +139,24 @@ class BeamSolver:
             if not candidates:
                 break
 
-            # 排序元组: (overflow, -satisfied_count, totals_total, -item_count)
-            candidates.sort(key=lambda x: (
-                x[0],
-                -sum(1 for i, tg in enumerate(target_vec)
-                     if tg > 0 and x[1][i] >= tg),
-                sum(x[1]),
-                -sum(x[2].values()),
-            ))
+            # 混合排序: 对无纯源要素的进展给予溢出折扣
+            def _candidate_sort_key(cand):
+                overflow, total, sig_counts = cand
+                # 无纯源要素每达成 1 点，从 overflow 扣除折扣系数
+                progress_discount = 0
+                for i, tg in enumerate(target_vec):
+                    if tg > 0 and ALL_ASPECTS_ORDERED[i] in pure_less_set:
+                        progress_discount += min(total[i], tg) * 0.5
+                adj_overflow = max(0, math.ceil(overflow - progress_discount))
+                return (
+                    adj_overflow,
+                    -sum(1 for i, tg in enumerate(target_vec)
+                         if tg > 0 and total[i] >= tg),
+                    sum(total),
+                    -sum(sig_counts.values()),
+                )
+
+            candidates.sort(key=_candidate_sort_key)
             beam = candidates[:self.beam_width]
 
             # ── 收敛检查 ──────────────────────────────────────────────
@@ -172,6 +186,7 @@ class BeamSolver:
                         sol_sigs.add(key)
                         all_solutions.append(
                             self._sig_counts_to_solution(sig_counts, target))
+                        all_sig_counts.append(dict(sig_counts))
                 break
 
             if has_zero:
@@ -185,6 +200,16 @@ class BeamSolver:
                                    len(target_aspects) * 50)
                 if no_new_solution_count >= no_new_limit:
                     break
+
+        # ── 后处理：精炼 ────────────────────────────────────────────────
+        # 对每个方案，用高效签名替换低效签名组合
+        for i in range(len(all_solutions)):
+            raw_counts = all_sig_counts[i]
+            refined = self._refine_counts(raw_counts, target, target_aspects,
+                                          aspect_sig_pool, pure_less_set)
+            if refined is not raw_counts:
+                new_sol = self._sig_counts_to_solution(refined, target)
+                all_solutions[i] = new_sol
 
         # 最终排序
         all_solutions.sort(key=lambda s: (
@@ -200,14 +225,20 @@ class BeamSolver:
     # ═══════════════════════════════════════════════════════════════════════
 
     def _build_sig_pool(self, target_aspects: Set[str],
-                        relevant_sigs: Set[str]) -> Dict[str, List[str]]:
+                        relevant_sigs: Set[str]) -> Tuple[Dict[str, List[str]], Set[str]]:
         """
         为每个目标要素构建签名候选池。
         策略1：细粒度优先（同等条件下优先多要素覆盖）
+        策略1.5A：效率注入 — 无纯源要素的高效签名（调整后效率优先）
+        策略1.5B：覆盖注入 — 跨目标签名注入池中部（确保在 top_k×2 范围内）
         策略2：每个数值至少保留一条（纯度优先）
         策略3：多要素覆盖（仅多目标时启用）
+
+        Returns:
+            (aspect_sig_pool, pure_less_set) — 候选池 + 无纯源的目标要素集合
         """
         aspect_sig_pool = {}
+        pure_less_set: Set[str] = set()
 
         for aspect in target_aspects:
             other_aspects = (target_aspects - {aspect}) if len(target_aspects) > 1 else set()
@@ -237,18 +268,28 @@ class BeamSolver:
                     seen.add(sig)
                     pool.append(sig)
 
-            # 策略2：每个数值至少保留一条（纯度优先）
-            val_best = {}
-            for val, num_a, _, sig in candidates:
-                if val not in val_best or num_a < val_best[val][0]:
-                    val_best[val] = (num_a, sig)
-            for val in sorted(val_best.keys())[:50]:
-                _, sig = val_best[val]
-                if sig not in seen:
-                    seen.add(sig)
-                    pool.append(sig)
+            # 策略1.5A：效率注入 — 无纯源要素的高效签名（调整后效率）
+            # 纯源不存在时，将高 val/(总要素-其他目标覆盖) 的签名注入池中
+            has_pure = any(num_a == 1 for _, num_a, _, _ in candidates)
+            if not has_pure:
+                pure_less_set.add(aspect)
+                efficient = []
+                for val, num_a, _, sig in candidates:
+                    if sig not in seen:
+                        vec = self.db.sig_vectors[sig]
+                        total = sum(vec)
+                        other_cover = sum(vec[ASPECT_INDEX[o]] for o in other_aspects)
+                        adj_eff = val / (total - other_cover) if total > other_cover else val
+                        efficient.append((adj_eff, val, sig))
+                efficient.sort(key=lambda x: (-x[0], x[1]))
+                for adj_eff, val, sig in efficient:
+                    if len(pool) >= self.top_k_items * 2:
+                        break
+                    if sig not in seen:
+                        seen.add(sig)
+                        pool.append(sig)
 
-            # 注入中间层的多要素覆盖签名（介于策略1和策略2之间）
+            # 策略1.5B：覆盖注入 — 跨目标签名注入池中部
             # 确保深层的跨目标签名仍在扩展循环可达范围内
             if other_aspects:
                 for val, num_a, _, sig in candidates:
@@ -280,7 +321,7 @@ class BeamSolver:
 
             aspect_sig_pool[aspect] = pool
 
-        return aspect_sig_pool
+        return aspect_sig_pool, pure_less_set
 
     # ═══════════════════════════════════════════════════════════════════════
     # 内部工具方法
@@ -350,3 +391,109 @@ class BeamSolver:
             totals=dict(totals),
             overflow=overflow,
         )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 精炼后处理
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _refine_counts(self,
+                       counts: Dict[str, int],
+                       target: Dict[str, int],
+                       target_aspects: Set[str],
+                       aspect_sig_pool: Dict[str, List[str]],
+                       pure_less_set: Set[str]) -> Dict[str, int]:
+        """
+        用更高效的签名替换当前方案中低效的签名组合，减少溢出。
+        仅处理无纯源要素：用效率更高的池签名替换效率最低的已用签名。
+        """
+        new_counts = dict(counts)
+        target_vec = [target.get(a, 0) for a in ALL_ASPECTS_ORDERED]
+
+        for aspect in sorted(pure_less_set):
+            need = target.get(aspect, 0)
+            if need <= 0:
+                continue
+
+            # 收集当前方案中提供该要素的签名
+            current = []  # (adj_eff, val, sig, cnt, waste_per_unit)
+            for sig, cnt in list(new_counts.items()):
+                if cnt <= 0:
+                    continue
+                vec = self.db.sig_vectors[sig]
+                val = vec[ASPECT_INDEX[aspect]]
+                if val <= 0:
+                    continue
+                total = sum(vec)
+                other_targets = sum(
+                    vec[ASPECT_INDEX[o]] for o in target_aspects if o != aspect)
+                adj_eff = val / (total - other_targets) if total > other_targets else 0
+                waste_per_unit = total - other_targets - val
+                current.append((adj_eff, val, sig, cnt, waste_per_unit))
+
+            if not current:
+                continue
+
+            # 当前签名按效率升序（最差的在前）
+            current.sort(key=lambda x: x[0])
+            worst_current = current[0]
+
+            # 构建效率排序的池签名（在本方案中未使用）
+            pool = aspect_sig_pool.get(aspect, [])
+            efficient = []
+            for sig in pool:
+                if sig in new_counts:
+                    continue
+                vec = self.db.sig_vectors[sig]
+                val = vec[ASPECT_INDEX[aspect]]
+                if val <= 0:
+                    continue
+                total = sum(vec)
+                other_targets = sum(
+                    vec[ASPECT_INDEX[o]] for o in target_aspects if o != aspect)
+                adj_eff = val / (total - other_targets) if total > other_targets else 0
+                waste_per_unit = total - other_targets - val
+                efficient.append((adj_eff, val, sig, waste_per_unit))
+
+            efficient.sort(key=lambda x: (-x[0], x[1]))  # 最效率的在前
+
+            if not efficient or efficient[0][0] <= worst_current[0]:
+                continue  # 无改进空间
+
+            # 尝试替换：移除 N 份低效签名，加入 M 份高效签名
+            for pool_eff, pool_val, pool_sig, pool_waste in efficient:
+                if pool_sig in new_counts:
+                    continue
+                for cur_eff, cur_val, cur_sig, cur_cnt, cur_waste in current:
+                    if cur_eff >= pool_eff:
+                        continue
+                    # 计算等价替换量
+                    # 需要: M * pool_val >= N * cur_val
+                    for N in range(1, cur_cnt + 1):
+                        M = math.ceil(N * cur_val / pool_val)
+                        if M * pool_waste >= N * cur_waste:
+                            continue  # 没有减少溢出
+
+                        # 验证替换后方案仍然有效
+                        test_counts = dict(new_counts)
+                        test_counts[cur_sig] -= N
+                        if test_counts[cur_sig] <= 0:
+                            del test_counts[cur_sig]
+                        test_counts[pool_sig] = (
+                            test_counts.get(pool_sig, 0) + M)
+
+                        # 重新计算所有目标是否仍被满足
+                        test_total = [0] * NUM_ASPECTS
+                        for s, c in test_counts.items():
+                            sv = self.db.sig_vectors[s]
+                            for i in range(NUM_ASPECTS):
+                                test_total[i] += sv[i] * c
+
+                        if self._is_satisfied(test_total, target_vec):
+                            new_counts = test_counts
+                            break
+                    if new_counts is not counts:
+                        break
+                if new_counts is not counts:
+                    break
+
+        return new_counts
