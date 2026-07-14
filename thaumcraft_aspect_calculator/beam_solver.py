@@ -203,38 +203,43 @@ class BeamSolver:
                         relevant_sigs: Set[str]) -> Dict[str, List[str]]:
         """
         为每个目标要素构建签名候选池。
-        策略1：细粒度优先
+        策略1：细粒度优先（同等条件下优先多要素覆盖）
         策略2：每个数值至少保留一条（纯度优先）
         策略3：多要素覆盖（仅多目标时启用）
         """
         aspect_sig_pool = {}
 
         for aspect in target_aspects:
+            other_aspects = (target_aspects - {aspect}) if len(target_aspects) > 1 else set()
+
             candidates = []
-            for sig in relevant_sigs:
+            # 对 relevant_sigs 排序以确保确定性
+            for sig in sorted(relevant_sigs):
                 vec = self.db.sig_vectors[sig]
                 idx = ASPECT_INDEX[aspect]
                 val = vec[idx]
                 if val <= 0:
                     continue
                 num_aspects = sum(1 for v in vec if v > 0)
-                candidates.append((val, num_aspects, sig))
+                # 计算该签名覆盖了多少其他目标要素
+                other_coverage = sum(1 for o in other_aspects if vec[ASPECT_INDEX[o]] > 0)
+                candidates.append((val, num_aspects, -other_coverage, sig))
 
-            # 排序：数值小（细粒度）→ 纯度高（少侧面要素）
-            candidates.sort(key=lambda x: (x[0], x[1]))
+            # 排序：数值小（细粒度）→ 纯度高（少侧面要素）→ 多目标覆盖优先 → 签名名（确定）
+            candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
 
             pool = []
             seen = set()
 
             # 策略1：细粒度优先
-            for val, num_a, sig in candidates[:self.top_k_items]:
+            for val, num_a, _, sig in candidates[:self.top_k_items]:
                 if sig not in seen:
                     seen.add(sig)
                     pool.append(sig)
 
             # 策略2：每个数值至少保留一条（纯度优先）
             val_best = {}
-            for val, num_a, sig in candidates:
+            for val, num_a, _, sig in candidates:
                 if val not in val_best or num_a < val_best[val][0]:
                     val_best[val] = (num_a, sig)
             for val in sorted(val_best.keys())[:50]:
@@ -244,9 +249,8 @@ class BeamSolver:
                     pool.append(sig)
 
             # 策略3：多要素覆盖（仅目标要素 >1 时）
-            if len(target_aspects) > 1:
-                other_aspects = target_aspects - {aspect}
-                for val, num_a, sig in candidates:
+            if other_aspects:
+                for val, num_a, _, sig in candidates:
                     if sig in seen:
                         continue
                     vec = self.db.sig_vectors[sig]
@@ -255,6 +259,17 @@ class BeamSolver:
                             seen.add(sig)
                             pool.append(sig)
                             break
+
+            # 最终重排：多要素覆盖优先（使扩展循环尽早尝试这些签名）
+            # 这对于束搜索在小 top_k_items 下仍能覆盖跨目标签名至关重要
+            if other_aspects:
+                reordered = []
+                for idx, sig in enumerate(pool):
+                    vec = self.db.sig_vectors[sig]
+                    cov = sum(1 for o in other_aspects if vec[ASPECT_INDEX[o]] > 0)
+                    reordered.append((-cov, idx, sig))
+                reordered.sort()
+                pool = [sig for _, _, sig in reordered]
 
             aspect_sig_pool[aspect] = pool
 
