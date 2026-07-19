@@ -8,7 +8,7 @@ Thaumcraft 6 要素配平器 — CLI 入口
 import argparse
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from .data_model import ALL_ASPECTS_ORDERED, ASPECT_INDEX, NUM_ASPECTS, AspectDatabase
 from .beam_solver import BeamSolver
@@ -156,7 +156,8 @@ def print_missing_json_error():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def print_results(solutions: List[Solution], db: AspectDatabase,
-                  items_per_group: int, target: Dict[str, int] = None):
+                  items_per_group: int, target: Dict[str, int] = None,
+                  exclude_keys: Set[str] = None):
     """输出求解结果"""
     if not solutions:
         print("❌ 未找到可行方案。")
@@ -174,6 +175,10 @@ def print_results(solutions: List[Solution], db: AspectDatabase,
         if len(best_overflows) > 1:
             print(f"   溢出范围: {', '.join(str(o) for o in sorted(best_overflows))}")
 
+    if exclude_keys:
+        shown = [db.items[k].display_name() if k in db.items else k for k in sorted(exclude_keys)]
+        print(f"   📛 已排除物品: {', '.join(shown)}")
+
     print()
     for i, sol in enumerate(solutions):
         print(sol.display(db, index=i + 1,
@@ -186,6 +191,74 @@ def print_results(solutions: List[Solution], db: AspectDatabase,
         print(f"   {'-' * 32}")
         for i, sol in enumerate(solutions):
             print(f"   #{i + 1:<6} {sol.overflow:<8} {sol.totals_total:<8} {sol.item_count:<8}")
+
+
+def interactive_exclude_rerun(solutions: List[Solution], db: AspectDatabase,
+                               target: Dict[str, int],
+                               args) -> List[Solution]:
+    """交互式排除物品后重新求解"""
+    if not solutions:
+        return solutions
+
+    from .beam_solver import BeamSolver
+    from .ilp_solver import solve_with_ilp_auto
+
+    exclude_keys: Set[str] = set()
+
+    while True:
+        print("\n" + "═" * 50)
+        print("要排除某些物品后重新求解吗？")
+        print("输入物品名称（可多个，用空格分隔），直接回车跳过。")
+        try:
+            line = input("\n排除 > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line:
+            break
+
+        names = line.split()
+        new_keys: Set[str] = set()
+        for name in names:
+            keys = db.get_keys_by_display_name(name)
+            if keys:
+                new_keys.update(keys)
+                print(f"  ✓ {name} → {len(keys)} 个物品")
+            else:
+                print(f"  ✗ 未找到: {name}")
+
+        if not new_keys:
+            continue
+
+        exclude_keys.update(new_keys)
+        print(f"\n⏳ 重新求解（已累计排除 {len(exclude_keys)} 个物品）...")
+
+        prev_solutions = solutions
+        if args.use_ilp:
+            solutions = solve_with_ilp_auto(
+                db, target, n_solutions=args.num_solutions,
+                time_limit=args.time_limit,
+                exclude_vis_crystals=args.exclude_vis_crystals,
+                exclude_item_keys=exclude_keys)
+        else:
+            solver = BeamSolver(
+                db, beam_width=args.beam_width,
+                top_k_items=args.top_k,
+                max_iterations=args.max_iter,
+                exclude_vis_crystals=args.exclude_vis_crystals,
+                exclude_item_keys=exclude_keys)
+            solutions = solver.solve(target, n_solutions=args.num_solutions)
+
+        if not solutions:
+            print("❌ 排除后无解，已还原排除列表。")
+            exclude_keys.difference_update(new_keys)
+            solutions = prev_solutions
+            continue
+
+        print_results(solutions, db, items_per_group=args.items_per_group,
+                      target=target, exclude_keys=exclude_keys)
+
+    return solutions
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -276,6 +349,10 @@ def main():
     # ── 输出 ──
     print_results(solutions, db, items_per_group=args.items_per_group,
                   target=target)
+
+    # ── 交互式排除 ──
+    if solutions:
+        interactive_exclude_rerun(solutions, db, target, args)
 
 
 if __name__ == '__main__':

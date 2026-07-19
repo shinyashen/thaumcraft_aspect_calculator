@@ -7,7 +7,7 @@ Thaumcraft 6 要素配平器 — PuLP MILP 求解器
 
 import sys
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from .data_model import ALL_ASPECTS_ORDERED, AspectDatabase
 from .solution import Solution
@@ -17,10 +17,12 @@ class ILPSolver:
     """PuLP MILP 求解器"""
 
     def __init__(self, db: AspectDatabase, time_limit: int = 30,
-                 exclude_vis_crystals: bool = True):
+                 exclude_vis_crystals: bool = True,
+                 exclude_item_keys: Set[str] = None):
         self.db = db
         self.time_limit = time_limit
         self.exclude_vis_crystals = exclude_vis_crystals
+        self.exclude_item_keys = exclude_item_keys or set()
 
     def solve(self, target: Dict[str, int], n_solutions: int = 5) -> List[Solution]:
         try:
@@ -35,7 +37,8 @@ class ILPSolver:
         if not relevant:
             return []
         relevant = self.db.filter_pool(
-            relevant, exclude_vis_crystals=self.exclude_vis_crystals)
+            relevant, exclude_vis_crystals=self.exclude_vis_crystals,
+            exclude_keys=self.exclude_item_keys)
         if not relevant:
             return []
 
@@ -143,16 +146,19 @@ class ILPSolver:
 
 def solve_with_ilp_auto(db: AspectDatabase, target: Dict[str, int],
                         n_solutions: int = 5, time_limit: int = 30,
-                        exclude_vis_crystals: bool = True) -> List[Solution]:
+                        exclude_vis_crystals: bool = True,
+                        exclude_item_keys: Set[str] = None) -> List[Solution]:
     """包装函数：自动尝试 ILP，失败时回退到束搜索"""
     print("🔧 尝试 PuLP MILP 求解器...")
     solver_ilp = ILPSolver(
         db, time_limit=time_limit,
-        exclude_vis_crystals=exclude_vis_crystals)
+        exclude_vis_crystals=exclude_vis_crystals,
+        exclude_item_keys=exclude_item_keys)
     solutions = solver_ilp.solve(target, n_solutions=n_solutions)
     if solutions:
         return solutions
     print("⚠ ILP 求解未返回结果，使用束搜索作为回退。", file=sys.stderr)
     from .beam_solver import BeamSolver
-    solver_beam = BeamSolver(db, exclude_vis_crystals=exclude_vis_crystals)
+    solver_beam = BeamSolver(db, exclude_vis_crystals=exclude_vis_crystals,
+                              exclude_item_keys=exclude_item_keys)
     return solver_beam.solve(target, n_solutions=n_solutions)

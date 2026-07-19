@@ -165,11 +165,14 @@ class AspectDatabase:
         return [it for it in items if not self.is_vis_crystal(it.key)]
 
     def filter_pool(self, items: List[ItemProfile],
-                    exclude_vis_crystals: bool = True) -> List[ItemProfile]:
+                    exclude_vis_crystals: bool = True,
+                    exclude_keys: Set[str] = None) -> List[ItemProfile]:
         """综合过滤物品池"""
         result = list(items)
         if exclude_vis_crystals:
             result = self.filter_vis_crystals(result)
+        if exclude_keys:
+            result = [it for it in result if it.key not in exclude_keys]
         return result
 
     # ── 要素签名 ─────────────────────────────────────────────────────────
@@ -190,3 +193,19 @@ class AspectDatabase:
                 sig = self.aspect_signature(item.aspects)
                 self._sig_index[sig].append(key)
         return [self.items[k] for k in self._sig_index.get(signature, [])]
+
+    # ── 显示名称反向索引 ───────────────────────────────────────────────
+
+    @property
+    def display_name_index(self) -> Dict[str, List[str]]:
+        """display_name → [item_key, ...] 的反向索引（惰性建立）"""
+        if not hasattr(self, '_dn_index'):
+            self._dn_index = defaultdict(list)
+            for key, item in self.items.items():
+                dn = item.display_name()
+                self._dn_index[dn].append(key)
+        return self._dn_index
+
+    def get_keys_by_display_name(self, name: str) -> List[str]:
+        """通过显示名称查找物品 key（可能一个名称对应多个物品）"""
+        return self.display_name_index.get(name.strip(), [])

@@ -28,7 +28,8 @@ class BeamSolver:
     def __init__(self, db: AspectDatabase, beam_width: int = 300,
                  top_k_items: int = 30, max_iterations: int = 500,
                  expand_limit: int = 0,
-                 exclude_vis_crystals: bool = True):
+                 exclude_vis_crystals: bool = True,
+                 exclude_item_keys: Set[str] = None):
         """
         Args:
             db: AspectDatabase 实例
@@ -37,6 +38,7 @@ class BeamSolver:
             max_iterations: 最大迭代次数
             expand_limit: 每轮最多展开多少个非可行状态（0 = 全部展开）
             exclude_vis_crystals: 排除魔力水晶碎片
+            exclude_item_keys: 要排除的物品 key 集合
         """
         self.db = db
         self.beam_width = beam_width
@@ -44,6 +46,7 @@ class BeamSolver:
         self.max_iterations = max_iterations
         self.expand_limit = expand_limit or beam_width
         self.exclude_vis_crystals = exclude_vis_crystals
+        self.exclude_item_keys = exclude_item_keys or set()
 
     # ═══════════════════════════════════════════════════════════════════════
     # 主求解入口
@@ -68,7 +71,9 @@ class BeamSolver:
         relevant = self.db.get_relevant_items(target_aspects)
         if not relevant:
             return []
-        relevant = self.db.filter_pool(relevant, exclude_vis_crystals=self.exclude_vis_crystals)
+        relevant = self.db.filter_pool(relevant,
+                                        exclude_vis_crystals=self.exclude_vis_crystals,
+                                        exclude_keys=self.exclude_item_keys)
         relevant_sigs = set()
         for item in relevant:
             relevant_sigs.add(AspectDatabase.aspect_signature(item.aspects))
@@ -379,6 +384,8 @@ class BeamSolver:
             items = self.db.get_items_for_signature(sig)
             if self.exclude_vis_crystals:
                 items = self.db.filter_vis_crystals(items)
+            if self.exclude_item_keys:
+                items = [it for it in items if it.key not in self.exclude_item_keys]
             if not items:
                 continue
 
